@@ -1,0 +1,6 @@
+{
+  "name": "在庫シンク：クラウドロジ to Shopify",
+  "description": "クラウドロジの在庫データと商品マスタを照合し、Shopify用の在庫更新データを生成するツールです。",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
