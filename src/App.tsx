@@ -87,6 +87,46 @@ const triggerDownload = (csvContent: string, filename: string) => {
   document.body.removeChild(link);
 };
 
+// --- ArrayBuffer to Text Decoder with Auto Encoding Detection (UTF-8 / Shift_JIS) ---
+const decodeCsvFile = (file: File): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const buffer = e.target?.result as ArrayBuffer;
+      if (!buffer) {
+        reject(new Error("ファイルの読み出しに失敗しました。"));
+        return;
+      }
+      
+      // UTF-8 with fatal validation first
+      try {
+        const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
+        const text = utf8Decoder.decode(buffer);
+        // If there are no replacement characters, it is most likely valid UTF-8
+        if (!text.includes('\uFFFD')) {
+          resolve(text);
+          return;
+        }
+      } catch (err) {
+        // Fall through to Shift_JIS
+      }
+      
+      // Fallback decode to Shift-JIS for Japanese Windows-Excel CSV outputs
+      try {
+        const sjisDecoder = new TextDecoder('shift-jis', { fatal: false });
+        const text = sjisDecoder.decode(buffer);
+        resolve(text);
+      } catch (err) {
+        // Resilient safe fallback to standard UTF-8 standard
+        const defaultDecoder = new TextDecoder('utf-8');
+        resolve(defaultDecoder.decode(buffer));
+      }
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsArrayBuffer(file);
+  });
+};
+
 // --- Custom Components ---
 
 interface FileUploadZoneProps {
@@ -271,57 +311,70 @@ export default function App() {
   };
 
   // CSV Master Import
-  const handleMasterCsvImport = (file: File) => {
-    Papa.parse(file, {
-      header: true,
-      skipEmptyLines: true,
-      complete: (res) => {
-        const rows = res.data as any[];
-        const findValue = (row: any, keys: string[]) => {
-          const foundKey = Object.keys(row).find(k => keys.some(target => k.trim().toLowerCase() === target.trim().toLowerCase()));
-          if (foundKey) return row[foundKey];
-          const partialKey = Object.keys(row).find(k => keys.some(target => k.trim().toLowerCase().includes(target.trim().toLowerCase())));
-          return partialKey ? row[partialKey] : null;
-        };
-
-        const imported: ProductMaster[] = rows.map((row, idx) => {
-          return {
-            id: (Date.now() + idx).toString(),
-            stockId: String(findValue(row, ["在庫ID", "SKU", "商品コード", "品番"]) || "").trim(),
-            handle: String(findValue(row, ["Handle", "ハンドル", "URL"]) || "").trim(),
-            option1Name: String(findValue(row, ["Option1 Name", "オプション1名"]) || ""),
-            option1Value: String(findValue(row, ["Option1 Value", "オプション1値"]) || ""),
-            option2Name: String(findValue(row, ["Option2 Name", "オプション2名"]) || ""),
-            option2Value: String(findValue(row, ["Option2 Value", "オプション2値"]) || ""),
-            option3Name: String(findValue(row, ["Option3 Name", "オプション3名"]) || ""),
-            option3Value: String(findValue(row, ["Option3 Value", "オプション3値"]) || ""),
-            location: String(findValue(row, ["Location", "ロケーション", "倉庫"]) || "中央区平尾2-9-8"),
+  const handleMasterCsvImport = async (file: File) => {
+    try {
+      const text = await decodeCsvFile(file);
+      Papa.parse(text, {
+        header: true,
+        skipEmptyLines: true,
+        complete: (res) => {
+          const rows = res.data as any[];
+          const findValue = (row: any, keys: string[]) => {
+            if (!row) return null;
+            const cleanedKeys = keys.map(k => k.trim().toLowerCase());
+            const foundKey = Object.keys(row).find(k => {
+              const ck = k.replace(/^\uFEFF/, '').trim().toLowerCase();
+              return cleanedKeys.some(target => ck === target);
+            });
+            if (foundKey) return row[foundKey];
+            const partialKey = Object.keys(row).find(k => {
+              const ck = k.replace(/^\uFEFF/, '').trim().toLowerCase();
+              return cleanedKeys.some(target => ck.includes(target) || target.includes(ck));
+            });
+            return partialKey ? row[partialKey] : null;
           };
-        }).filter(item => item.stockId && item.handle);
 
-        if (imported.length === 0) {
-          setError("取り込み可能なデータが見つかりませんでした。在庫ID、Handleカラムが含まれているかご確認ください。");
-          return;
-        }
+          const imported: ProductMaster[] = rows.map((row, idx) => {
+            return {
+              id: (Date.now() + idx).toString(),
+              stockId: String(findValue(row, ["在庫ID", "SKU", "商品コード", "品番"]) || "").trim(),
+              handle: String(findValue(row, ["Handle", "ハンドル", "URL"]) || "").trim(),
+              option1Name: String(findValue(row, ["Option1 Name", "オプション1名"]) || ""),
+              option1Value: String(findValue(row, ["Option1 Value", "オプション1値"]) || ""),
+              option2Name: String(findValue(row, ["Option2 Name", "オプション2名"]) || ""),
+              option2Value: String(findValue(row, ["Option2 Value", "オプション2値"]) || ""),
+              option3Name: String(findValue(row, ["Option3 Name", "オプション3名"]) || ""),
+              option3Value: String(findValue(row, ["Option3 Value", "オプション3値"]) || ""),
+              location: String(findValue(row, ["Location", "ロケーション", "倉庫"]) || "中央区平尾2-9-8"),
+            };
+          }).filter(item => item.stockId && item.handle);
 
-        const merged = [...masters];
-        imported.forEach(imp => {
-          const existingIdx = merged.findIndex(m => m.stockId === imp.stockId);
-          if (existingIdx > -1) {
-            merged[existingIdx] = imp; // Overwrite
-          } else {
-            merged.push(imp);
+          if (imported.length === 0) {
+            setError("取り込み可能なデータが見つかりませんでした。在庫ID、Handleカラムが含まれているかご確認ください。");
+            return;
           }
-        });
 
-        saveMasters(merged);
-        alert(`${imported.length}件のマスタデータをインポート/更新しました。`);
-        setError(null);
-      },
-      error: (err) => {
-        setError(`マスタ解析エラー: ${err.message}`);
-      }
-    });
+          const merged = [...masters];
+          imported.forEach(imp => {
+            const existingIdx = merged.findIndex(m => m.stockId === imp.stockId);
+            if (existingIdx > -1) {
+              merged[existingIdx] = imp; // Overwrite
+            } else {
+              merged.push(imp);
+            }
+          });
+
+          saveMasters(merged);
+          alert(`${imported.length}件のマスタデータをインポート/更新しました。`);
+          setError(null);
+        },
+        error: (err) => {
+          setError(`マスタ解析エラー: ${err.message}`);
+        }
+      });
+    } catch (e: any) {
+      setError(`マスタデコード処理中にエラーが発生しました: ${e.message}`);
+    }
   };
 
   // Master CSV Export (Full database download)
@@ -368,8 +421,9 @@ export default function App() {
     setError(null);
 
     try {
+      const text = await decodeCsvFile(clFile);
       const parsedCL = await new Promise<CloudLogiRow[]>((resolve, reject) => {
-        Papa.parse(clFile, {
+        Papa.parse(text, {
           header: true,
           skipEmptyLines: true,
           complete: (res) => resolve(res.data as CloudLogiRow[]),
@@ -380,9 +434,16 @@ export default function App() {
       const matchedResults: ResultRow[] = parsedCL.map(clRow => {
         const findValue = (row: any, keys: string[]) => {
           if (!row) return null;
-          const foundKey = Object.keys(row).find(k => keys.some(target => k.trim().toLowerCase() === target.trim().toLowerCase()));
+          const cleanedKeys = keys.map(k => k.trim().toLowerCase());
+          const foundKey = Object.keys(row).find(k => {
+            const ck = k.replace(/^\uFEFF/, '').trim().toLowerCase();
+            return cleanedKeys.some(target => ck === target);
+          });
           if (foundKey) return row[foundKey];
-          const partialKey = Object.keys(row).find(k => keys.some(target => k.trim().toLowerCase().includes(target.trim().toLowerCase())));
+          const partialKey = Object.keys(row).find(k => {
+            const ck = k.replace(/^\uFEFF/, '').trim().toLowerCase();
+            return cleanedKeys.some(target => ck.includes(target) || target.includes(ck));
+          });
           return partialKey ? row[partialKey] : null;
         };
 
@@ -671,12 +732,13 @@ export default function App() {
                           <th className="px-6 py-3.5">Shopify Handle</th>
                           <th className="px-6 py-3.5">ロケーション</th>
                           <th className="px-6 py-3.5">照合ステータス</th>
+                          <th className="px-6 py-3.5 text-right">操作</th>
                         </tr>
                       </thead>
                       <tbody className="text-xs divide-y divide-slate-100">
                         {displayedResults.length === 0 ? (
                           <tr>
-                            <td colSpan={7} className="px-6 py-20 text-center text-slate-400 italic">
+                            <td colSpan={8} className="px-6 py-20 text-center text-slate-400 italic">
                               {results.length > 0 ? "該当条件に一致する照合結果はありません" : "クラウドロジの在庫データがインされた際にここにリアルタイム表示されます"}
                             </td>
                           </tr>
@@ -697,6 +759,37 @@ export default function App() {
                                 ) : (
                                   <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
                                     マスタ未登録
+                                  </span>
+                                )}
+                              </td>
+                              <td className="px-6 py-4 text-right">
+                                {row.status === 'not_found' ? (
+                                  <button
+                                    onClick={() => {
+                                      setNewForm({
+                                        stockId: row.stockId,
+                                        handle: row.stockId.toLowerCase().replace(/[^a-z0-9-_]/g, '-'),
+                                        location: '中央区平尾2-9-8',
+                                        option1Name: 'Title',
+                                        option1Value: 'Default Title',
+                                        option2Name: '',
+                                        option2Value: '',
+                                        option3Name: '',
+                                        option3Value: '',
+                                      });
+                                      setIsAddingNew(true);
+                                      setActiveTab('master');
+                                    }}
+                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold rounded text-[10px] transition-colors shadow-sm"
+                                    title="マスタにこの商品を新規追加します"
+                                  >
+                                    <Plus className="h-3 w-3" />
+                                    マスタに追加
+                                  </button>
+                                ) : (
+                                  <span className="text-emerald-500 text-[10px] font-bold inline-flex items-center gap-1">
+                                    <CheckCircle2 className="h-3.5 w-3.5" />
+                                    照合OK
                                   </span>
                                 )}
                               </td>
