@@ -98,28 +98,66 @@ const decodeCsvFile = (file: File): Promise<string> => {
         return;
       }
       
-      // UTF-8 with fatal validation first
+      let utf8Text = "";
+      let utf8Success = false;
       try {
         const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
-        const text = utf8Decoder.decode(buffer);
-        // If there are no replacement characters, it is most likely valid UTF-8
-        if (!text.includes('\uFFFD')) {
-          resolve(text);
-          return;
-        }
+        utf8Text = utf8Decoder.decode(buffer);
+        utf8Success = true;
       } catch (err) {
-        // Fall through to Shift_JIS
+        utf8Success = false;
+        try {
+          // Non-fatal fallback for UTF-8 comparison
+          utf8Text = new TextDecoder('utf-8', { fatal: false }).decode(buffer);
+        } catch (e) {
+          utf8Text = "";
+        }
       }
       
-      // Fallback decode to Shift-JIS for Japanese Windows-Excel CSV outputs
+      let sjisText = "";
       try {
         const sjisDecoder = new TextDecoder('shift-jis', { fatal: false });
-        const text = sjisDecoder.decode(buffer);
-        resolve(text);
+        sjisText = sjisDecoder.decode(buffer);
       } catch (err) {
-        // Resilient safe fallback to standard UTF-8 standard
-        const defaultDecoder = new TextDecoder('utf-8');
-        resolve(defaultDecoder.decode(buffer));
+        sjisText = utf8Text;
+      }
+
+      // Feature scoring based on typical Japanese CSV context
+      const jpKeywords = ["在庫ID", "商品名", "カテゴリ", "販売可能在庫数", "在庫数", "実在庫", "品番", "商品コード", "型番", "SKU", "ロケーション", "倉庫"];
+      
+      let utf8Score = 0;
+      let sjisScore = 0;
+
+      // 1. Keyword appearance assessment
+      jpKeywords.forEach(keyword => {
+        if (utf8Text && utf8Text.includes(keyword)) utf8Score += 100;
+        if (sjisText && sjisText.includes(keyword)) sjisScore += 100;
+      });
+
+      // 2. Identify decoding artifacts (Replacement characters)
+      const utf8Replacements = utf8Text ? (utf8Text.match(/\uFFFD/g) || []).length : 0;
+      const sjisReplacements = sjisText ? (sjisText.match(/\uFFFD/g) || []).length : 0;
+      utf8Score -= utf8Replacements * 5;
+      sjisScore -= sjisReplacements * 5;
+
+      // 3. Native Japanese Hiragana letter distribution (extremely unlikely in corrupt decoding)
+      const hiraganaRegex = /[ぁ-ん]/g;
+      const utf8HiraganaCount = utf8Text ? (utf8Text.match(hiraganaRegex) || []).length : 0;
+      const sjisHiraganaCount = sjisText ? (sjisText.match(hiraganaRegex) || []).length : 0;
+      utf8Score += utf8HiraganaCount * 2;
+      sjisScore += sjisHiraganaCount * 2;
+
+      // 4. Boost pure native UTF-8 verification
+      if (utf8Success && utf8Replacements === 0) {
+        utf8Score += 500;
+      }
+
+      console.log(`CSV Encoding Decided. UTF-8 Score: ${utf8Score} (Rep: ${utf8Replacements}, Hira: ${utf8HiraganaCount}), Shift_JIS Score: ${sjisScore} (Rep: ${sjisReplacements}, Hira: ${sjisHiraganaCount})`);
+
+      if (sjisScore > utf8Score) {
+        resolve(sjisText);
+      } else {
+        resolve(utf8Text);
       }
     };
     reader.onerror = () => reject(reader.error);
