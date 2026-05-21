@@ -283,6 +283,8 @@ export default function App() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filterUnmatched, setFilterUnmatched] = useState(false);
+  const [filterZeroStockOnly, setFilterZeroStockOnly] = useState(false);
+  const [filterExcludeZeroStock, setFilterExcludeZeroStock] = useState(false);
 
   // Load / Initialize Master from LocalStorage
   useEffect(() => {
@@ -561,7 +563,17 @@ export default function App() {
     m.location.toLowerCase().includes(masterSearch.toLowerCase())
   );
 
-  const displayedResults = filterUnmatched ? results.filter(r => r.status === 'not_found') : results;
+  let displayedResults = [...results];
+
+  if (filterUnmatched) {
+    displayedResults = displayedResults.filter(r => r.status === 'not_found');
+  }
+
+  if (filterZeroStockOnly) {
+    displayedResults = displayedResults.filter(r => r.availableStock === 0);
+  } else if (filterExcludeZeroStock) {
+    displayedResults = displayedResults.filter(r => r.availableStock > 0);
+  }
 
   return (
     <div className="flex flex-col h-screen bg-slate-50 text-slate-900 overflow-hidden font-sans">
@@ -674,7 +686,7 @@ export default function App() {
 
                 <div>
                   <h2 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">3. 表示フィルター</h2>
-                  <div className="space-y-2 bg-slate-50 p-3 rounded-lg border border-slate-100">
+                  <div className="space-y-2.5 bg-slate-50 p-3 rounded-lg border border-slate-100">
                     <label className="flex items-center gap-2.5 cursor-pointer group">
                       <input 
                         type="checkbox"
@@ -684,6 +696,34 @@ export default function App() {
                       />
                       <span className="text-xs text-slate-600 group-hover:text-slate-900 transition-colors font-medium">マスタ未登録のみ抽出</span>
                     </label>
+
+                    <div className="pt-2 border-t border-slate-200/65 space-y-2">
+                      <label className="flex items-center gap-2.5 cursor-pointer group">
+                        <input 
+                          type="checkbox"
+                          checked={filterZeroStockOnly}
+                          onChange={(e) => {
+                            setFilterZeroStockOnly(e.target.checked);
+                            if (e.target.checked) setFilterExcludeZeroStock(false);
+                          }}
+                          className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-3.5 w-3.5"
+                        />
+                        <span className="text-xs text-slate-600 group-hover:text-slate-900 transition-colors font-medium">在庫数0のみ抽出 (欠品商品)</span>
+                      </label>
+
+                      <label className="flex items-center gap-2.5 cursor-pointer group">
+                        <input 
+                          type="checkbox"
+                          checked={filterExcludeZeroStock}
+                          onChange={(e) => {
+                            setFilterExcludeZeroStock(e.target.checked);
+                            if (e.target.checked) setFilterZeroStockOnly(false);
+                          }}
+                          className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-3.5 w-3.5"
+                        />
+                        <span className="text-xs text-slate-600 group-hover:text-slate-900 transition-colors font-medium">在庫数0を除外 (販売可能のみ)</span>
+                      </label>
+                    </div>
                   </div>
                 </div>
 
