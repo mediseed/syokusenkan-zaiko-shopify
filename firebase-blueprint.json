@@ -1,0 +1,58 @@
+{
+  "entities": {
+    "ProductMaster": {
+      "title": "ProductMaster",
+      "description": "Product Master definition referencing Shopify handle, location, stock ID, and options.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique key matching Document ID"
+        },
+        "stockId": {
+          "type": "string",
+          "description": "在庫ID (クラウドロジ照合用)"
+        },
+        "handle": {
+          "type": "string",
+          "description": "Shopify Handle"
+        },
+        "option1Name": {
+          "type": "string",
+          "description": "Name of Option 1 (e.g. Title)"
+        },
+        "option1Value": {
+          "type": "string",
+          "description": "Value of Option 1 (e.g. Default Title)"
+        },
+        "option2Name": {
+          "type": "string",
+          "description": "Name of Option 2"
+        },
+        "option2Value": {
+          "type": "string",
+          "description": "Value of Option 2"
+        },
+        "option3Name": {
+          "type": "string",
+          "description": "Name of Option 3"
+        },
+        "option3Value": {
+          "type": "string",
+          "description": "Value of Option 3"
+        },
+        "location": {
+          "type": "string",
+          "description": "Physical warehouse location"
+        }
+      },
+      "required": ["id", "stockId", "handle"]
+    }
+  },
+  "firestore": {
+    "/products/{productId}": {
+      "schema": "ProductMaster",
+      "description": "Shared list of master products synchronized on both Shopify and Cloud Logi"
+    }
+  }
+}

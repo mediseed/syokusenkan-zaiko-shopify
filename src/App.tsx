@@ -22,6 +22,8 @@ import {
 import Papa from 'papaparse';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
+import { collection, onSnapshot, doc, setDoc, deleteDoc } from 'firebase/firestore';
+import { db, handleFirestoreError, OperationType } from './firebase';
 
 // --- Types ---
 
@@ -286,45 +288,84 @@ export default function App() {
   const [filterZeroStockOnly, setFilterZeroStockOnly] = useState(false);
   const [filterExcludeZeroStock, setFilterExcludeZeroStock] = useState(false);
 
-  // Load / Initialize Master from LocalStorage
+  // Load / Initialize Master from Firebase Firestore (and automatic matching on file present)
   useEffect(() => {
-    const saved = localStorage.getItem('shopify_stock_sync_masters');
-    if (saved) {
-      try {
-        setMasters(JSON.parse(saved));
-      } catch (e) {
-        setMasters(SAMPLE_MASTER_DATA);
-      }
-    } else {
-      setMasters(SAMPLE_MASTER_DATA);
-    }
+    setIsProcessing(true);
+    const unsubscribe = onSnapshot(collection(db, 'products'), (snapshot) => {
+      const dbMasters: ProductMaster[] = [];
+      snapshot.forEach(docSnap => {
+        dbMasters.push(docSnap.data() as ProductMaster);
+      });
+      // Sort masters by stockId or Date to maintain stable order
+      dbMasters.sort((a, b) => String(a.stockId).localeCompare(String(b.stockId)));
+      setMasters(dbMasters);
+      setIsProcessing(false);
+    }, (err) => {
+      setIsProcessing(false);
+      handleFirestoreError(err, OperationType.LIST, 'products');
+    });
+
+    return () => unsubscribe();
   }, []);
 
-  // Save to LocalStorage whenever masters change
-  const saveMasters = (newMasters: ProductMaster[]) => {
-    setMasters(newMasters);
-    localStorage.setItem('shopify_stock_sync_masters', JSON.stringify(newMasters));
+  // Automatically re-run matching whenever firebase masters snapshot fires
+  useEffect(() => {
+    if (cloudLogiFile) {
+      processCloudLogi(cloudLogiFile, masters);
+    }
+  }, [masters]);
+
+  // Seeding sample data helper if the Firestore database is empty
+  const handleSeedSamples = async () => {
+    try {
+      setIsProcessing(true);
+      setError(null);
+      for (const item of SAMPLE_MASTER_DATA) {
+        await setDoc(doc(db, 'products', item.id), item);
+      }
+      alert("サンプルマスタデータをFirestoreに登録しました。こちらのデータは全ユーザー共通で利用できます。");
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'products');
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
-  // --- Master Management Actions ---
+  // --- Master Management Actions using Firestore ---
 
-  const handleCreate = (e: React.FormEvent) => {
+  const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newForm.stockId.trim() || !newForm.handle.trim()) {
       setError("在庫IDとHandleは必須項目です。");
       return;
     }
-    const newlyCreated: ProductMaster = {
-      id: Date.now().toString(),
-      ...newForm
+    const docId = Date.now().toString();
+    const cleanItem: ProductMaster = {
+      id: docId,
+      stockId: newForm.stockId.trim(),
+      handle: newForm.handle.trim(),
+      option1Name: newForm.option1Name.trim(),
+      option1Value: newForm.option1Value.trim(),
+      option2Name: newForm.option2Name.trim(),
+      option2Value: newForm.option2Value.trim(),
+      option3Name: newForm.option3Name.trim(),
+      option3Value: newForm.option3Value.trim(),
+      location: newForm.location.trim()
     };
-    const updated = [...masters, newlyCreated];
-    saveMasters(updated);
-    setIsAddingNew(false);
-    setNewForm({
-      stockId: '', handle: '', option1Name: 'Title', option1Value: 'Default Title', option2Name: '', option2Value: '', option3Name: '', option3Value: '', location: '中央区平尾2-9-8'
-    });
-    setError(null);
+
+    try {
+      setError(null);
+      setIsProcessing(true);
+      await setDoc(doc(db, 'products', docId), cleanItem);
+      setIsAddingNew(false);
+      setNewForm({
+        stockId: '', handle: '', option1Name: 'Title', option1Value: 'Default Title', option2Name: '', option2Value: '', option3Name: '', option3Value: '', location: '中央区平尾2-9-8'
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `products/${docId}`);
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   const startEdit = (item: ProductMaster) => {
@@ -332,21 +373,47 @@ export default function App() {
     setEditForm({ ...item });
   };
 
-  const handleUpdate = (id: string) => {
+  const handleUpdate = async (id: string) => {
     if (!editForm.stockId.trim() || !editForm.handle.trim()) {
       setError("在庫IDとHandleは必須項目です。");
       return;
     }
-    const updated = masters.map(m => m.id === id ? { ...m, ...editForm } : m);
-    saveMasters(updated);
-    setEditingId(null);
-    setError(null);
+    const cleanItem: ProductMaster = {
+      id: id,
+      stockId: editForm.stockId.trim(),
+      handle: editForm.handle.trim(),
+      option1Name: editForm.option1Name.trim(),
+      option1Value: editForm.option1Value.trim(),
+      option2Name: editForm.option2Name.trim(),
+      option2Value: editForm.option2Value.trim(),
+      option3Name: editForm.option3Name.trim(),
+      option3Value: editForm.option3Value.trim(),
+      location: editForm.location.trim()
+    };
+
+    try {
+      setError(null);
+      setIsProcessing(true);
+      await setDoc(doc(db, 'products', id), cleanItem);
+      setEditingId(null);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `products/${id}`);
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
-  const handleDelete = (id: string) => {
-    if (confirm("このマスタデータを削除しますか？")) {
-      const updated = masters.filter(m => m.id !== id);
-      saveMasters(updated);
+  const handleDelete = async (id: string) => {
+    if (confirm("このマスタデータを削除しますか？\n(クラウドデータベースから全ユーザー共通で削除されます)")) {
+      try {
+        setError(null);
+        setIsProcessing(true);
+        await deleteDoc(doc(db, 'products', id));
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, `products/${id}`);
+      } finally {
+        setIsProcessing(false);
+      }
     }
   };
 
@@ -357,7 +424,7 @@ export default function App() {
       Papa.parse(text, {
         header: true,
         skipEmptyLines: true,
-        complete: (res) => {
+        complete: async (res) => {
           const rows = res.data as any[];
           const findValue = (row: any, keys: string[]) => {
             if (!row) return null;
@@ -379,13 +446,13 @@ export default function App() {
               id: (Date.now() + idx).toString(),
               stockId: String(findValue(row, ["在庫ID", "SKU", "商品コード", "品番"]) || "").trim(),
               handle: String(findValue(row, ["Handle", "ハンドル", "URL"]) || "").trim(),
-              option1Name: String(findValue(row, ["Option1 Name", "オプション1名"]) || ""),
-              option1Value: String(findValue(row, ["Option1 Value", "オプション1値"]) || ""),
-              option2Name: String(findValue(row, ["Option2 Name", "オプション2名"]) || ""),
-              option2Value: String(findValue(row, ["Option2 Value", "オプション2値"]) || ""),
-              option3Name: String(findValue(row, ["Option3 Name", "オプション3名"]) || ""),
-              option3Value: String(findValue(row, ["Option3 Value", "オプション3値"]) || ""),
-              location: String(findValue(row, ["Location", "ロケーション", "倉庫"]) || "中央区平尾2-9-8"),
+              option1Name: String(findValue(row, ["Option1 Name", "オプション1名"]) || "").trim(),
+              option1Value: String(findValue(row, ["Option1 Value", "オプション1値"]) || "").trim(),
+              option2Name: String(findValue(row, ["Option2 Name", "オプション2名"]) || "").trim(),
+              option2Value: String(findValue(row, ["Option2 Value", "オプション2値"]) || "").trim(),
+              option3Name: String(findValue(row, ["Option3 Name", "オプション3名"]) || "").trim(),
+              option3Value: String(findValue(row, ["Option3 Value", "オプション3値"]) || "").trim(),
+              location: String(findValue(row, ["Location", "ロケーション", "倉庫"]) || "中央区平尾2-9-8").trim(),
             };
           }).filter(item => item.stockId && item.handle);
 
@@ -394,19 +461,23 @@ export default function App() {
             return;
           }
 
-          const merged = [...masters];
-          imported.forEach(imp => {
-            const existingIdx = merged.findIndex(m => m.stockId === imp.stockId);
-            if (existingIdx > -1) {
-              merged[existingIdx] = imp; // Overwrite
-            } else {
-              merged.push(imp);
-            }
-          });
-
-          saveMasters(merged);
-          alert(`${imported.length}件のマスタデータをインポート/更新しました。`);
+          setIsProcessing(true);
           setError(null);
+          try {
+            let count = 0;
+            for (const imp of imported) {
+              const existingItem = masters.find(m => m.stockId === imp.stockId);
+              const targetId = existingItem ? existingItem.id : imp.id;
+              const finalItem = { ...imp, id: targetId };
+              await setDoc(doc(db, 'products', targetId), finalItem);
+              count++;
+            }
+            alert(`${count}件のマスタデータを共通Firestoreにインポート/更新しました。`);
+          } catch (err) {
+            handleFirestoreError(err, OperationType.WRITE, 'products');
+          } finally {
+            setIsProcessing(false);
+          }
         },
         error: (err) => {
           setError(`マスタ解析エラー: ${err.message}`);
@@ -1079,7 +1150,16 @@ export default function App() {
                         {filteredMasters.length === 0 ? (
                           <tr>
                             <td colSpan={7} className="px-6 py-20 text-center text-slate-400 italic">
-                              登録済みのマスタ、または検索に一致するデータが存在しません。いつでも手動で追加・修正、またはCSVを流し込めます。
+                              <p className="mb-4">登録済みのマスタ、または検索に一致するデータが存在しません。</p>
+                              <button
+                                onClick={handleSeedSamples}
+                                disabled={isProcessing}
+                                type="button"
+                                className="px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold rounded-lg text-xs transition-all shadow-sm inline-flex items-center gap-1.5"
+                              >
+                                <Sparkles className="h-3.5 w-3.5" />
+                                サンプル登録データ(3件)をロードする
+                              </button>
                             </td>
                           </tr>
                         ) : (
@@ -1245,9 +1325,12 @@ export default function App() {
                   </div>
 
                   {masters.length > 0 && (
-                    <div className="px-6 py-3 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-[10px] font-bold text-slate-400 tracking-wider uppercase shrink-0">
-                      <span>保存済みマスタ総件数: {masters.length} 件</span>
-                      <span>ブラウザに常時ローカル保存されます</span>
+                    <div className="px-6 py-3 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-[10px] font-bold text-slate-400 tracking-wider uppercase shrink-0 font-sans">
+                      <span>共同マスタデータベース総件数: {masters.length} 件</span>
+                      <span className="text-indigo-600 flex items-center gap-1">
+                        <Database className="h-3 w-3" />
+                        クラウド(Firestore)を介してリアルタイムに全員同期・管理されています
+                      </span>
                     </div>
                   )}
                 </div>

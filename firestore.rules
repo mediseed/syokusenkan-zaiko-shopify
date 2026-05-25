@@ -1,0 +1,37 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net: Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Rules for products collection (ProductMaster)
+    match /products/{productId} {
+      allow read, list: if true;
+      allow create: if isValidProductMaster(request.resource.data) && isValidId(productId);
+      allow update: if isValidProductMaster(request.resource.data) && isValidId(productId);
+      allow delete: if isValidId(productId);
+    }
+  }
+
+  // Standalone ID structural validation helper
+  function isValidId(id) {
+    return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+  }
+
+  // Products custom validation helper ensuring strict schema adherence
+  function isValidProductMaster(data) {
+    return data.keys().hasAll(['id', 'stockId', 'handle'])
+      && data.id is string && data.id.size() <= 128
+      && data.stockId is string && data.stockId.size() <= 256
+      && data.handle is string && data.handle.size() <= 256
+      && (!('option1Name' in data) || (data.option1Name is string && data.option1Name.size() <= 128))
+      && (!('option1Value' in data) || (data.option1Value is string && data.option1Value.size() <= 128))
+      && (!('option2Name' in data) || (data.option2Name is string && data.option2Name.size() <= 128))
+      && (!('option2Value' in data) || (data.option2Value is string && data.option2Value.size() <= 128))
+      && (!('option3Name' in data) || (data.option3Name is string && data.option3Name.size() <= 128))
+      && (!('option3Value' in data) || (data.option3Value is string && data.option3Value.size() <= 128))
+      && (!('location' in data) || (data.location is string && data.location.size() <= 256));
+  }
+}
